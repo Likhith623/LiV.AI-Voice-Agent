@@ -440,12 +440,6 @@ mypy main.py --strict
 
 ---
 
-## 📄 Legal & Licensing
-
-This sophisticated project operates under the MIT License - consult the [LICENSE](LICENSE) file for comprehensive legal details.
-
----
-
 ## Acknowledgments
 
 - **Deepgram** - Revolutionary speech recognition technology platform
