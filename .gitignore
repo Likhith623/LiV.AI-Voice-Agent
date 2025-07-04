@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# IDE/project files
+.vscode/
+.idea/
+*.swp
+
+# Test/output files
+*.tmp
+*.temp
+*.bak
