@@ -459,6 +459,22 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all HTTP headers
 )
 
+
+# Configure logging for the application
+logging.basicConfig(
+    filename="app.log",  # Log file name
+    filemode='a',  # Append to log file
+    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',  # Log format
+    datefmt='%H:%M:%S',  # Time format in logs
+    level=logging.INFO  # Log level: INFO
+)
+
+# Supabase connection details (for database access)
+SUPABASE_URL = os.getenv("SUPABASE_URL")  # Supabase project URL from environment variable
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # Supabase API key from environment variable
+
+# Create a Supabase client using project URL and API key
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Configure logging for the application
 logging.basicConfig(
     filename="app.log",  # Log file name
