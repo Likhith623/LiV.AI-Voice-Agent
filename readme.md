@@ -1,4 +1,4 @@
-# 🎙️ LiV.AI – The Voice-Centric AI Engine for Real-Time Intelligence
+# 🎙️ LiV.AI – The Voice-Centric AI Engine 
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green.svg)](https://fastapi.tiangolo.com)
