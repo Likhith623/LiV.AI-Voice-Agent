@@ -1,13 +1,38 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.4.0
+# Production-ready requirements.txt
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+
+# Database
+supabase
+
+# Audio Processing
+pydub
+deepgram-sdk
+cartesia
+SpeechRecognition
+
+# AI/ML APIs
+google-generativeai
+openai
+assemblyai
+
+# HTTP and Networking
+requests
+httpx
+
+# Caching
+redis[asyncio]
+
+# File handling
 python-multipart
-httpx>=0.25.0
-deepgram-sdk>=3.2.0
-cartesia>=1.0.0
-speech-recognition>=3.10.0
-pydub>=0.25.1
-google-generativeai>=0.3.0
-redis>=5.0.0
-python-dotenv>=1.0.0
-typing-extensions>=4.8.0
+aiofiles
+
+# Logging and monitoring (optional but recommended)
+structlog
+prometheus-fastapi-instrumentator
+
+# Security (for production)
+python-jose[cryptography]
+passlib[bcrypt]

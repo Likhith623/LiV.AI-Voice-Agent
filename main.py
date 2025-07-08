@@ -1,57 +1,42 @@
-# Update the imports at the top - ADD the missing functions:
-
-import logging
-import google.generativeai as genai
-import traceback
 import os
-import random
-import tempfile
-import logging
 import json
-import hashlib
 import time
+import base64
+import tempfile
+import hashlib
+import logging
 import asyncio
-import httpx
-from fastapi import Request
-import re
-from fastapi.responses import JSONResponse
-
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-# Add to top of main.py after other imports
-import google.generativeai as genai
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+
+from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks, HTTPException, Query, Body, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from pydantic import BaseModel
 from typing import Optional
-from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 
-from fastapi import FastAPI,File,UploadFile,Form,BackgroundTasks,HTTPException,Query,Body # type: ignore
-from pydantic import BaseModel # type: ignore
-from typing_extensions import Annotated # type: ignore
-from typing import Union
-from fastapi.middleware.cors import CORSMiddleware # type: ignore
-from fastapi.encoders import jsonable_encoder # type: ignore
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse # type: ignore
-from dotenv import load_dotenv  # type: ignore
+from supabase import create_client, Client
+from pydub import AudioSegment
+from deepgram import DeepgramClient, PrerecordedOptions
+from cartesia import Cartesia
+import requests
+import speech_recognition as sr
+import google.generativeai as genai
+from concurrent.futures import ThreadPoolExecutor
 
-from datetime import date
-from typing import List, Dict
-from fastapi_utils.tasks import repeat_every # type: ignore
-import traceback
-from typing import Optional
-# Voice call imports - Added for speech recognition
-import speech_recognition as sr # type: ignore
-import io
-from pydub import AudioSegment # type: ignore
-from pydub.utils import which # type: ignore
-import assemblyai as aai # type: ignore
-import redis.asyncio as redis # type: ignore
-from deepgram import DeepgramClient, PrerecordedOptions # type: ignore
+from diff_per import get_bot_prompt
+import httpx
+from openai import AsyncOpenAI  # Used as fallback in call_xai_api
+
+# If you use Redis caching (as in your code), you also need:
+import redis.asyncio as redis
+import assemblyai as aai
 
 
-from cartesia import Cartesia # type: ignore
+
 cache_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts_cache")
-dotenv_path = Path('../.env')
+dotenv_path = Path('.env')
 load_dotenv(dotenv_path=dotenv_path)
 
 # ========== REDIS SETUP FOR AGGRESSIVE CACHING ==========
@@ -210,6 +195,26 @@ async def call_xai_api(messages, model="grok-beta"):
             logging.error(f"❌ All APIs failed: {e2}")
             raise Exception("Gemini and OpenAI both failed")
 
+
+# Add this function for database logging
+async def insert_entry(email: str, transcript: str, response: str, bot_id: str, timestamp: str, platform: str):
+    """Insert conversation entry into database (background task)"""
+    try:
+        # Insert into Supabase
+        result = supabase.table("conversations").insert({
+            "email": email,
+            "user_message": transcript,
+            "bot_response": response,
+            "bot_id": bot_id,
+            "timestamp": timestamp,
+            "platform": platform
+        }).execute()
+        
+        logging.info(f"Conversation entry inserted successfully for {email}")
+        
+    except Exception as e:
+        logging.error(f"Failed to insert conversation entry: {e}")
+        
 async def get_redis_client():
     """Get or create Redis client for caching with improved error handling"""
     global redis_client
@@ -361,94 +366,27 @@ async def cached_retrieve_memory(query: str, email: str, bot_id: str, previous_c
         logging.info(f"Memory cache HIT - Retrieved in {cache_time:.3f}s")
         return cached_result["memory"], cached_result["rephrased_user_message"], cached_result["category"]
 
-    # Cache miss - call original function
-    logging.info("Memory cache MISS - Calling original retrieve_memory")
-    memory, rephrased, category = await retrieve_memory(query, email, bot_id, previous_conversation)
+    # Cache miss - use fallback values for voice calls (no memory retrieval for speed)
+    logging.info("Memory cache MISS - Using fast fallback for voice calls")
+    
+    # For voice calls, return empty memory for maximum speed
+    memory = ""  # No memory context for faster voice responses
+    rephrased_user_message = query  # Use original query
+    category = "General"  # Default category
 
     # Cache the result for future use
-    await set_cached_memory(cache_key, memory, rephrased, category)
+    await set_cached_memory(cache_key, memory, rephrased_user_message, category)
 
     total_time = time.time() - start_time
     logging.info(f"Memory retrieval completed in {total_time:.3f}s (cached for future)")
 
-    return memory, rephrased, category
+    return memory, rephrased_user_message, category
 
 
-import requests # type: ignore
-import base64
-from diff_per.py import get_bot_prompt
-#from news_weather_agent import is_news_query, persona_response
-import boto3
-from botocore.exceptions import ClientError
-import uuid_utils as uuid
-import re
 
-# --- Lifespan and App Initialization (Lines 47-113) ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup tasks: Print startup message
-    print("Starting up...")
 
-    # Schedule log upload every 30 minutes using FastAPI's repeat_every
-    @repeat_every(seconds=60 * 30)
-    async def upload_log():
-        print("Uploading log file to S3")
-        upload_log_to_s3()
+app = FastAPI()
 
-    # Schedule memory extraction check every 30 minutes
-    @repeat_every(seconds=60 * 30)
-    async def check_memory_extraction():
-        print("Checking Memory Extraction")
-        await checker()
-
-    # Schedule message checks every 30 minutes
-    @repeat_every(seconds=60 * 30)
-    async def check_scheduled_tasks():
-        check_daily_scheduled_messages()
-        return check_scheduled_messages()
-
-    # Schedule redundancy check every hour
-    @repeat_every(seconds=60 * 60)
-    def scheduled_hourly_categorization():
-        logging.info("🔁 Running redundancy task every 1 hour")
-        try:
-            redundant()
-        except Exception as e:
-            logging.info(f"❌ Error during redundancy categorization: {e}")
-
-    # Schedule categorization every 3 hours
-    @repeat_every(seconds=60 * 60 * 3)
-    def scheduled_memory_categorization():
-        print("⏰ Running categorization task every 3 hours")
-        try:
-            run_categorization_job()
-        except Exception as e:
-            print(f"Error during scheduled categorization: {e}")
-
-    # Schedule daily summary every 24 hours
-    @repeat_every(seconds=60 * 60 * 24)
-    def scheduled_daily_summary():
-        print("🗓️ Running daily summary generation at 2 AM UTC")
-        process_summaries_for_yesterday()
-
-    # Start all scheduled tasks
-    upload_log()
-    await check_memory_extraction()
-    await check_scheduled_tasks()
-    scheduled_hourly_categorization()
-    scheduled_memory_categorization()
-    scheduled_daily_summary()
-
-    yield  # The app runs here
-
-    # Shutdown tasks (if any)
-    print("Shutting down...")
-
-app = FastAPI(lifespan=lifespan)
-app.include_router(gemma_router, prefix="/cv/generate", tags=["gemma"])
-
-# Connect to Pinecone vector database (used for memory and embeddings)
-pc, index = connect_pinecone()
 
 # Add CORS middleware to allow requests from all origins (for frontend-backend communication)
 app.add_middleware(
@@ -831,28 +769,6 @@ class SyncRequest(BaseModel):
     bot_id: str = ""
     messages_id: str = ""
 
-@app.post("/sync")
-async def sync(request: SyncRequest, background_tasks: BackgroundTasks):
-    try:
-        # Validate if the question is provided and not empty
-        if not request.email or request.email.strip() == "":
-            return {"error": str("Please provide a email")}  # Return error if invalid
-
-        # Validate if the bot_id is provided and not empty
-        if not request.bot_id or request.bot_id.strip() == "":
-            return {"error": str("Please provide a bot_id")}  # Return error if invalid
-
-        # Get all messages based on email, bot_id, and messages_id [optional] from the database
-        messages = sync_messages(request.email, request.bot_id, request.messages_id)
-
-        # Return the messages
-        return {
-            "response": messages
-        }
-    except Exception as e:
-        print(e)
-        return {"error": str(f"Error occurred while processing!!")}  # Return error message
-
 
 
 # Define the expected schema for frontend error logs using Pydantic
@@ -1152,25 +1068,9 @@ async def speech_to_text(audio_file: UploadFile) -> str:
 #         logging.error(f"Error in speech to text conversion: {e}")
 #         raise HTTPException(status_code=500, detail=f"Speech to text conversion failed: {str(e)}")
 
-# ========== BACKGROUND HELPER FUNCTIONS FOR PARALLEL PROCESSING ==========
-async def background_log_origin_response(email: str, bot_id: str, transcript: str, previous_conversation: list):
-    """Background task to log origin response without blocking main flow"""
-    try:
-        log_messages_with_like_dislike(email, bot_id, transcript, "I was developed by the Desis Dev team!", "", previous_conversation[-5:], "")
-    except Exception as e:
-        logging.error(f"Background origin logging failed: {e}")
-
-async def background_log_response(email: str, bot_id: str, transcript: str, response: str, previous_conversation: list, memory: str, request_time: str, platform: str):
-    """Background task to log regular response without blocking main flow"""
-    try:
-        log = log_messages_with_like_dislike(email, bot_id, transcript, response, "", previous_conversation[-5:], memory)
-        await insert_entry(email, transcript, response, bot_id, request_time, platform)
-        return log
-    except Exception as e:
-        logging.error(f"Background response logging failed: {e}")
-        return None
 
 # Voice call endpoint that integrates speech-to-text with existing chat logic and text-to-speech
+
 @app.post("/voice-call")
 async def voice_call(
     audio_file: UploadFile = File(...),
@@ -1234,7 +1134,7 @@ async def voice_call(
         async def preload_static_data():
             """Preload bot prompt, voice settings, and prepare conversation data"""
             # These operations can run simultaneously while STT processes
-            previous_conversation = restrict_to_last_20_messages(previous_conversation_list)
+          
             raw_bot_prompt = get_bot_prompt(bot_id)
 
             # Create personalized bot prompt
@@ -1256,6 +1156,7 @@ async def voice_call(
         preload_task = asyncio.create_task(preload_static_data())
 
         # Wait for both STT and preloading to complete
+
         transcript, preloaded_data = await asyncio.gather(stt_task, preload_task)
 
         phase1_time = time.time() - phase1_start
@@ -1268,69 +1169,9 @@ async def voice_call(
         previous_conversation = preloaded_data["previous_conversation"]
         bot_prompt = preloaded_data["bot_prompt"]
 
-        # ========== OPTIMIZED PHASE 2: Origin Check Only (Memory Retrieval Disabled for Voice Calls) ==========
+        # ========== OPTIMIZED PHASE 2: Memory Retrieval Disabled ==========
         phase2_start = time.time()
-        logging.info("🔄 Phase 2: Starting Origin Check Only (Memory Retrieval DISABLED for voice calls performance)")
-
-        # ========== PERFORMANCE OPTIMIZATION: Memory Retrieval DISABLED for Voice Calls ==========
-        # Memory retrieval is the biggest bottleneck in voice calls (9.78s out of 23.48s total)
-        # For voice calls, we prioritize response speed over memory context
-        # Memory retrieval is still available for regular chat endpoints (/cv/chat)
-
-        # Only run origin check (fast ~1 second)
-        origin_check_task = asyncio.create_task(
-            check_for_origin_question(transcript, previous_conversation)
-        )
-
-        # ==================== COMMENTED OUT: Memory Retrieval for Voice Calls ====================
-        # PERFORMANCE NOTE: This was taking 9.78s and causing slow voice responses
-        # Uncomment below to re-enable memory retrieval for voice calls if needed
-        #
-        # memory_retrieval_task = asyncio.create_task(
-        #     cached_retrieve_memory(transcript, email, bot_id, previous_conversation)
-        # )
-        #
-        # # Wait for both to complete with timeout handling
-        # try:
-        #     # Set a timeout of 15 seconds for memory retrieval to prevent hanging
-        #     check, memory_result = await asyncio.wait_for(
-        #         asyncio.gather(origin_check_task, memory_retrieval_task),
-        #         timeout=15.0
-        #     )
-        #     memory, rephrased_user_message, category = memory_result
-        #     logging.info("✅ Memory retrieval completed within timeout")
-        # except asyncio.TimeoutError:
-        #     logging.warning("⚠️ Memory retrieval timed out, using fallback values")
-        #     # Get origin check result (should be fast)
-        #     try:
-        #         check = await asyncio.wait_for(origin_check_task, timeout=2.0)
-        #     except:
-        #         check = "No"
-        #
-        #     # Use fallback values for memory retrieval
-        #     memory = ""
-        #     rephrased_user_message = transcript  # Use original transcript
-        #     category = "General"  # Default category
-        # except Exception as e:
-        #     logging.error(f"Error in parallel processing: {e}")
-        #     # Fallback values
-        #     check = "No"
-        #     memory = ""
-        #     rephrased_user_message = transcript
-        #     category = "General"
-        # ==================== END COMMENTED MEMORY RETRIEVAL ====================
-
-        # For voice calls: Use fast fallback values without memory retrieval
-        try:
-            # Only wait for origin check with reduced timeout since we're using gpt-3.5-turbo (faster)
-            check = await asyncio.wait_for(origin_check_task, timeout=2.0)
-            logging.info("✅ Origin check completed")
-        except asyncio.TimeoutError:
-            logging.warning("⚠️ Origin check timed out, using fallback")
-            check = "No"
-        except Exception as e:
-            logging.error(f"Error in origin check: {e}")
-            check = "No"
+        logging.info("🔄 Phase 2: Memory Retrieval DISABLED for voice calls performance")
 
         # Use optimized fallback values (no memory retrieval for voice calls)
         memory = ""  # No memory context for faster voice responses
@@ -1338,129 +1179,63 @@ async def voice_call(
         category = "General"  # Default category
 
         phase2_time = time.time() - phase2_start
-        logging.info(f"✅ Phase 2 completed in {phase2_time:.2f}s (Origin Check Only - Memory Retrieval DISABLED for voice calls)")
+        logging.info(f"✅ Phase 2 completed in {phase2_time:.2f}s (Memory Retrieval DISABLED for voice calls)")
+
+# ...existing code...
 
         # ========== RESPONSE GENERATION ==========
         phase3_start = time.time()
         logging.info("🔄 Phase 3: Starting Response Generation")
 
+        # Removed the entire "if category == 'Reminder'" block to avoid referencing undefined 'response'
+
+        # Generate bot response without memory context for voice calls
+        messages = [
+            {
+                "role": "system",
+                "content": bot_prompt
+            }
+        ]
+        messages.extend(previous_conversation)
+        messages.append(
+            {
+                "role": "user",
+                "content": transcript
+            }
+        )
+
+        response = await call_xai_api(messages, model="grok-beta")
         reminder = False
 
-        # If the question is from the origin, log the message and return a response
-        if check == "Yes":
-            response = "I was developed by a team of Desi Developers, but you brought me to life!!"
+        # Start TTS generation in parallel with logging (saves 2-3s)
+        tts_start_time = time.time()
+        tts_task = asyncio.create_task(generate_audio_optimized(
+            TTSRequest(
+                transcript=response,
+                bot_id=bot_id,
+                output_format=get_smart_audio_format(response, "voice_call")
+            ),
+            background_tasks
+        ))
 
-            # ========== CRITICAL FIX: Start TTS for origin response too ==========
-            # Previously missing TTS for origin response - caused variable scoping error
-            tts_start_time = time.time()
-            tts_task = asyncio.create_task(generate_audio_optimized(
-                TTSRequest(
-                    transcript=response,
-                    bot_id=bot_id,
-                    output_format=get_smart_audio_format(response, "voice_call")
-                ),
-                background_tasks
-            ))
-
-            # Start logging in background (non-blocking)
-            asyncio.create_task(
-                background_log_origin_response(email, bot_id, transcript, previous_conversation)
-            )
-
-            chat_response = {
-                "response": response,
-                "message_id": "origin_response",  # Will be updated by background task
-                "reminder": False
-            }
-        else:
-            # If the category is Reminder, generate the reminder response
-            if category == "Reminder":
-                print("REMINDER")
-                reminder_resp = await reminder_response(transcript, previous_conversation, request_time)
-                response = reminder_resp['response']
-                reminder = True
-
-                # ========== QUICK WIN #2: Start TTS immediately for reminder ==========
-                # Start TTS generation in parallel with logging (saves 2-3s)
-                tts_start_time = time.time()
-                tts_task = asyncio.create_task(generate_audio_optimized(
-                    TTSRequest(
-                        transcript=response,
-                        bot_id=bot_id,
-                        output_format=get_smart_audio_format(response, "voice_call")  # Smart format selection
-                    ),
-                    background_tasks
-                ))
-
-            else:
-                # ========== OPTIMIZED: Generate bot response without memory context for voice calls ==========
-                # For voice calls, we skip memory injection to prioritize response speed
-                # Memory context is still available in regular chat endpoints (/cv/chat)
-
-                # ========== QUICK WIN #1: Switch to gpt-3.5-turbo for 2-4s faster response ==========
-                # Previously used: o4-mini (reasoning model, slower but more accurate)
-                # Now using: gpt-3.5-turbo (chat model, 2-4s faster response time)
-                # Construct messages format directly for OpenAI API
-                messages = [
-                    {
-                        "role": "system",
-                        "content": bot_prompt  # Bot prompt without memory context for speed
-                    }
-                ]
-                messages.extend(previous_conversation)
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": transcript
-                    }
-                )
-
-                # ========== PREVIOUS MODEL (COMMENTED): o4-mini for accuracy ==========
-                # response = await call_openai_api(messages, model="o4-mini")
-
-                # ========== NEW MODEL: gpt-3.5-turbo for speed ==========
-                #response = await call_openai_api(messages, model="gpt-3.5-turbo")
-                response = await call_xai_api(messages, model="grok-beta")
-                reminder = False
-
-                # ========== QUICK WIN #2: Start TTS immediately after response ==========
-                # Start TTS generation in parallel with logging (saves 2-3s)
-                tts_start_time = time.time()
-                tts_task = asyncio.create_task(generate_audio_optimized(
-                    TTSRequest(
-                        transcript=response,
-                        bot_id=bot_id,
-                        output_format=get_smart_audio_format(response, "voice_call")  # Smart format selection
-                    ),
-                    background_tasks
-                ))
-
-            # Start logging in background (non-blocking)
-            log_task = asyncio.create_task(
-                background_log_response(email, bot_id, transcript, response, previous_conversation, memory, request_time, platform)
-            )
-
-            chat_response = {
-                "response": response,
-                "message_id": "processing",  # Will be updated by background task
-                "reminder": reminder
-            }
+        chat_response = {
+            "response": response,
+            "message_id": "processing",
+            "reminder": reminder
+        }
 
         phase3_time = time.time() - phase3_start
         logging.info(f"✅ Phase 3 completed in {phase3_time:.2f}s (Response Generation)")
 
-        # ========== QUICK WIN #2: PARALLEL PHASE 4: Wait for TTS completion ==========
-        # TTS was started immediately after response generation (parallel processing)
-        # Now wait for TTS to complete while logging continues in background
+        # Wait for TTS completion
         logging.info("🔄 Phase 4: Waiting for TTS completion (started in parallel)")
-
-        tts_response = await tts_task  # Wait for TTS task started earlier
-        phase4_time = time.time() - tts_start_time  # Measure from when TTS actually started
+        tts_response = await tts_task
+        phase4_time = time.time() - tts_start_time
         total_time = time.time() - start_time
 
         logging.info(f"✅ Phase 4 completed in {phase4_time:.2f}s (TTS Generation - Parallel)")
         logging.info(f"🎉 TOTAL Voice Call completed in {total_time:.2f}s")
-        logging.info(f"📊 Performance Breakdown: Phase1={phase1_time:.2f}s, Phase2={phase2_time:.2f}s (Origin Check Only), Phase3={phase3_time:.2f}s, Phase4={phase4_time:.2f}s (Parallel TTS)")
+        logging.info(f"📊 Performance Breakdown: Phase1={phase1_time:.2f}s, Phase2={phase2_time:.2f}s, Phase3={phase3_time:.2f}s, Phase4={phase4_time:.2f}s")
         logging.info(f"🚀 OPTIMIZATIONS APPLIED: Deepgram STT + Memory Disabled + gpt-3.5-turbo + Parallel TTS")
 
         # Return combined response
@@ -1475,9 +1250,9 @@ async def voice_call(
                 "total_time": round(total_time, 2),
                 "phase_breakdown": {
                     "stt_preload": round(phase1_time, 2),
-                    "origin_check_only": round(phase2_time, 2),  # Memory retrieval disabled for voice calls
+                    "memory_retrieval_disabled": round(phase2_time, 2),
                     "response_generation": round(phase3_time, 2),
-                    "tts_generation_parallel": round(phase4_time, 2)  # Parallel TTS optimization
+                    "tts_generation_parallel": round(phase4_time, 2)
                 },
                 "optimizations_applied": [
                     "deepgram_stt",
@@ -1488,10 +1263,13 @@ async def voice_call(
             }
         }
 
+
+
     except Exception as e:
         total_time = time.time() - start_time
         logging.error(f"❌ Error in voice call after {total_time:.2f}s: {e}")
         return {"error": f"Voice call processing failed: {str(e)}"}
+
 
 @app.get("/redis/health")
 async def redis_health():
@@ -2311,8 +2089,8 @@ async def generate_streaming_response(transcript: str, bot_id: str) -> dict:
             {"role": "user", "content": transcript}
         ]
 
-        # Generate response with optimized model
-        response = await call_openai_api(messages, model=model_config["model"])
+        # ✅ FIXED: Use call_xai_api instead of call_openai_api
+        response = await call_xai_api(messages, model="grok-beta")
 
         # Cache the response for future use
         cache_key = f"response:{hash(transcript.lower().strip())}"
@@ -2326,7 +2104,7 @@ async def generate_streaming_response(transcript: str, bot_id: str) -> dict:
         RESPONSE_CACHE[cache_key] = {
             "response": response,
             "timestamp": timestamp,
-            "model_used": model_config["model"],
+            "model_used": "grok-beta",  # Updated to reflect XAI usage
             "complexity": question_complexity
         }
 
@@ -2336,7 +2114,7 @@ async def generate_streaming_response(transcript: str, bot_id: str) -> dict:
             "response": response,
             "response_type": "streaming_generated",
             "generation_time": generation_time,
-            "model_used": model_config["model"],
+            "model_used": "grok-beta",  # Updated to reflect XAI usage
             "complexity_detected": question_complexity,
             "cached": False
         }
@@ -2353,7 +2131,8 @@ async def generate_streaming_response(transcript: str, bot_id: str) -> dict:
             "model_used": "fallback",
             "error": str(e)
         }
-
+        
+        
 async def parallel_tts_preprocessing(text: str, voice_id: str) -> dict:
     """Pre-optimize TTS settings while other processing happens"""
     try:
@@ -2828,20 +2607,6 @@ async def voice_call_ultra_fast_endpoint(
                 content={"error": "Could not transcribe audio. Please try again."}
             )
 
-
-        # ✅ NEW: CALCULATE XP MAGNITUDE for ultra-fast voice call
-        magnitude = get_magnitude_for_query(transcript)
-        
-        # ✅ NEW: AWARD IMMEDIATE XP based on magnitude
-        immediate_xp_result = award_immediate_xp_and_magnitude(
-            email, 
-            bot_id, 
-            magnitude
-        )
-        
-        logging.info(f"⚡ Ultra-Fast XP: {email} awarded +{immediate_xp_result['immediate_xp_awarded']} XP (magnitude: {magnitude:.2f})")
-
-
         # ========== PHASE 2: INSTANT RESPONSE CHECK ==========
         instant_response = await get_instant_response(transcript)
         if instant_response:
@@ -2855,10 +2620,6 @@ async def voice_call_ultra_fast_endpoint(
                 {"role": "user", "content": transcript}
             ]
             response = await call_xai_api(messages, model="grok-beta")
-
-# Update your voice call to use the perfect TTS:
-
-# In your voice_call_ultra_fast_endpoint, replace the TTS section:
 
         # ========== PHASE 3: PERFECT TTS ==========
         print(f"🎵 PERFECT: Audio generation started for: '{response[:50]}...'")
@@ -2899,12 +2660,6 @@ async def voice_call_ultra_fast_endpoint(
 
         total_time = time.time() - ultra_fast_start_time
 
-        # Background logging
-        background_tasks.add_task(
-            insert_entry, email, transcript, response, bot_id,
-            datetime.now().isoformat(), platform
-        )
-
         logging.info(f"⚡ ULTRA-FAST Voice Call COMPLETED in {total_time:.3f}s")
 
         return {
@@ -2922,16 +2677,7 @@ async def voice_call_ultra_fast_endpoint(
                     "minimal_logging"
                 ]
             },
-            "cached": audio_result.get("cached", False),
-            
-            # ✅ NEW: Include XP data in ultra-fast voice call response
-            "xp_data": {
-                "immediate_xp_awarded": immediate_xp_result["immediate_xp_awarded"],
-                "current_total_xp": immediate_xp_result["current_total_xp"],
-                "current_total_coins": immediate_xp_result["current_total_coins"],
-                "magnitude": immediate_xp_result["magnitude"],
-                "xp_calculation_success": immediate_xp_result["success"]
-            }   
+            "cached": audio_result.get("cached", False)
         }
 
     except Exception as e:
@@ -2946,6 +2692,8 @@ async def voice_call_ultra_fast_endpoint(
                 "processing_time": total_time
             }
         )
+
+
 # Add STT performance monitoring endpoints
 @app.get("/stt-performance/stats")
 async def get_stt_performance_stats():
