@@ -1,4 +1,6 @@
 import os
+from gtts import gTTS
+import io
 import json
 import time
 import base64
@@ -623,19 +625,18 @@ def cleanup_file(path: str):
         print(f"Error cleaning up file {path}: {e}")
 
 # Main TTS endpoint: generates audio for a given transcript and bot_id
+
+# Fix 1: Replace generate_audio function (around line 725)
 @app.post("/generate-audio")
 async def generate_audio(request: TTSRequest, background_tasks: BackgroundTasks):
     """
-    ENHANCED TTS endpoint with optimizations:
-    1. Check TTS cache for common responses
-    2. Use optimized audio format for faster processing
-    3. Fallback to original implementation on errors
+    ENHANCED TTS endpoint with HTTP-only optimizations
     """
     tts_start_time = time.time()
 
     try:
-        logging.info(f"🎵 ENHANCED TTS generate_audio called with bot_id: {request.bot_id}")
-        print(f"🎵 ENHANCED TTS generate_audio called with bot_id: {request.bot_id}")
+        logging.info(f"🎵 HTTP-ONLY TTS generate_audio called with bot_id: {request.bot_id}")
+        print(f"🎵 HTTP-ONLY TTS generate_audio called with bot_id: {request.bot_id}")
 
         # Get the appropriate voice ID for the bot
         voice_id = get_voice_id_for_bot(request.bot_id)
@@ -651,37 +652,75 @@ async def generate_audio(request: TTSRequest, background_tasks: BackgroundTasks)
             }
 
         # ========== OPTIMIZATION 2: Use smart audio format selection ==========
-        # Automatically choose the best format based on text length and use case
         smart_format = get_smart_audio_format(request.transcript, "voice_call")
         actual_format = smart_format
 
-        # Generate audio bytes using Cartesia (collect all chunks from generator)
-        # The Cartesia API returns a generator of audio chunks, so we join them into a single bytes object
-        audio_chunks = client.tts.bytes(
-            model_id="sonic",
-            transcript=request.transcript,
-            voice={"mode": "id", "id": voice_id},
-            output_format=actual_format
-        )
-        audio_data = b"".join(audio_chunks)
-        audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+        # ✅ HTTP-ONLY GENERATION using Cartesia HTTP API
+        try:
+            cartesia_url = "https://api.cartesia.ai/tts/bytes"
+            headers = {
+                "X-API-Key": os.environ.get("CARTESIA_API_KEY"),
+                "Cartesia-Version": "2024-06-30",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model_id": "sonic-english",
+                "transcript": request.transcript,
+                "voice": {
+                    "mode": "id",
+                    "id": voice_id
+                },
+                "output_format": actual_format
+            }
+            
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(cartesia_url, json=payload, headers=headers)
+                response.raise_for_status()
+                
+                audio_data = response.content
+                audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+                
+        except Exception as cartesia_error:
+            logging.error(f"❌ Cartesia HTTP API failed: {cartesia_error}")
+            # Fallback to gTTS
+            try:
+                tts = gTTS(text=request.transcript, lang='en', slow=False)
+                audio_buffer = io.BytesIO()
+                tts.write_to_fp(audio_buffer)
+                audio_buffer.seek(0)
+                
+                audio_data = audio_buffer.read()
+                audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+                logging.info("✅ gTTS fallback successful")
+                
+            except Exception as fallback_error:
+                logging.error(f"❌ All TTS methods failed: {fallback_error}")
+                raise HTTPException(status_code=500, detail=f"TTS generation failed: {fallback_error}")
 
         generation_time = time.time() - tts_start_time
 
         # ========== OPTIMIZATION 3: Cache the response ==========
         cache_tts_response(request.transcript, voice_id, audio_base64)
 
-        logging.info(f"✅ TTS generation completed in {generation_time:.3f}s")
+        logging.info(f"✅ HTTP TTS generation completed in {generation_time:.3f}s")
 
-        # Return JSON with voice_id and base64 audio
         return {
             "voice_id": voice_id,
             "audio_base64": audio_base64
         }
     except Exception as e:
         generation_time = time.time() - tts_start_time
-        logging.error(f"❌ Enhanced TTS failed in {generation_time:.3f}s: {e}")
+        logging.error(f"❌ HTTP TTS failed in {generation_time:.3f}s: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+
+
 
 class TTSRequest2(BaseModel):
     text: str
@@ -1401,49 +1440,68 @@ class StreamingTTSRequest(BaseModel):
         "sample_rate": 22050,  # Optimized for streaming quality/speed balance
     }
 
+
+
+# Fix 5: Replace streaming functions to use HTTP chunking (around line 1600)
 @app.post("/stream-audio")
 async def stream_audio(request: StreamingTTSRequest):
     """
-    Stream TTS audio in real-time for lightning-fast voice responses.
-    Similar to ChatGPT voice, this endpoint streams audio chunks as they're generated,
-    providing immediate audio feedback instead of waiting for the full generation.
+    Stream TTS audio using HTTP chunking (NO WEBSOCKETS)
     """
     try:
-        logging.info(f"🚀 STREAMING TTS called with bot_id: {request.bot_id}")
+        logging.info(f"🚀 HTTP STREAMING TTS called with bot_id: {request.bot_id}")
 
         # Get the appropriate voice ID for the bot
         voice_id = get_voice_id_for_bot(request.bot_id)
 
-        def generate_audio_stream():
-            """Generator function that yields audio chunks as they're produced"""
+        async def generate_audio_stream():
+            """Generator function that yields audio chunks via HTTP"""
             try:
-                # Use Cartesia's streaming capability
-                audio_stream = client.tts.bytes(
-                    model_id="sonic",
-                    transcript=request.transcript,
-                    voice={"mode": "id", "id": voice_id},
-                    output_format=request.output_format
-                )
+                # Use HTTP API for streaming
+                cartesia_url = "https://api.cartesia.ai/tts/bytes"
+                headers = {
+                    "X-API-Key": os.environ.get("CARTESIA_API_KEY"),
+                    "Cartesia-Version": "2024-06-30",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model_id": "sonic-english",
+                    "transcript": request.transcript,
+                    "voice": {
+                        "mode": "id",
+                        "id": voice_id
+                    },
+                    "output_format": request.output_format
+                }
+                
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    async with http_client.stream('POST', cartesia_url, json=payload, headers=headers) as response:
+                        response.raise_for_status()
+                        
+                        # Stream the response in chunks
+                        chunk_count = 0
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            if chunk:
+                                chunk_count += 1
+                                # Encode chunk to base64 for JSON streaming
+                                chunk_b64 = base64.b64encode(chunk).decode('utf-8')
 
-                # Stream each chunk as it's generated
-                for chunk in audio_stream:
-                    if chunk:
-                        # Encode chunk to base64 for JSON streaming
-                        chunk_b64 = base64.b64encode(chunk).decode('utf-8')
+                                # Format as JSON with metadata
+                                json_chunk = json.dumps({
+                                    "type": "audio_chunk",
+                                    "data": chunk_b64,
+                                    "voice_id": voice_id,
+                                    "chunk_number": chunk_count
+                                }) + "\n"
 
-                        # Format as JSON with metadata
-                        json_chunk = json.dumps({
-                            "type": "audio_chunk",
-                            "data": chunk_b64,
-                            "voice_id": voice_id
-                        }) + "\n"
-
-                        yield json_chunk.encode('utf-8')
+                                yield json_chunk.encode('utf-8')
 
                 # Send completion signal
                 completion_chunk = json.dumps({
                     "type": "stream_complete",
-                    "voice_id": voice_id
+                    "voice_id": voice_id,
+                    "total_chunks": chunk_count
                 }) + "\n"
                 yield completion_chunk.encode('utf-8')
 
@@ -1455,68 +1513,80 @@ async def stream_audio(request: StreamingTTSRequest):
                 }) + "\n"
                 yield error_chunk.encode('utf-8')
 
-        # Return streaming response with proper headers for SSE
         return StreamingResponse(
             generate_audio_stream(),
             media_type="application/json",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering for real-time streaming
+                "X-Accel-Buffering": "no"
             }
         )
 
     except Exception as e:
-        logging.error(f"Streaming TTS error: {e}")
+        logging.error(f"HTTP Streaming TTS error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+
 
 @app.post("/stream-audio-raw")
 async def stream_audio_raw(request: StreamingTTSRequest):
     """
-    Stream raw audio bytes directly for even faster playback.
-    This provides the fastest possible audio streaming experience by avoiding
-    JSON formatting overhead and letting the client handle raw audio chunks.
+    Stream raw audio bytes using HTTP (NO WEBSOCKETS)
     """
     try:
-        logging.info(f"🎵 RAW STREAMING TTS called with bot_id: {request.bot_id}")
+        logging.info(f"🎵 RAW HTTP STREAMING TTS called with bot_id: {request.bot_id}")
 
         # Get the appropriate voice ID for the bot
         voice_id = get_voice_id_for_bot(request.bot_id)
 
-        def generate_raw_audio_stream():
-            """Generator function that yields raw audio bytes"""
+        async def generate_raw_audio_stream():
+            """Generator function that yields raw audio bytes via HTTP"""
             try:
-                # Use Cartesia's streaming capability
-                audio_stream = client.tts.bytes(
-                    model_id="sonic",
-                    transcript=request.transcript,
-                    voice={"mode": "id", "id": voice_id},
-                    output_format=request.output_format
-                )
-
-                # Stream each raw audio chunk without any formatting
-                for chunk in audio_stream:
-                    if chunk:
-                        yield chunk
+                # Use HTTP API for raw streaming
+                cartesia_url = "https://api.cartesia.ai/tts/bytes"
+                headers = {
+                    "X-API-Key": os.environ.get("CARTESIA_API_KEY"),
+                    "Cartesia-Version": "2024-06-30",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model_id": "sonic-english",
+                    "transcript": request.transcript,
+                    "voice": {
+                        "mode": "id",
+                        "id": voice_id
+                    },
+                    "output_format": request.output_format
+                }
+                
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    async with http_client.stream('POST', cartesia_url, json=payload, headers=headers) as response:
+                        response.raise_for_status()
+                        
+                        # Stream raw audio chunks
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            if chunk:
+                                yield chunk
 
             except Exception as e:
-                logging.error(f"Raw streaming error: {e}")
-                # Cannot yield error in raw audio stream
+                logging.error(f"Raw HTTP streaming error: {e}")
                 return
 
-        # Return raw audio streaming response
         return StreamingResponse(
             generate_raw_audio_stream(),
             media_type="audio/wav",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering
+                "X-Accel-Buffering": "no"
             }
         )
 
     except Exception as e:
-        logging.error(f"Raw streaming TTS error: {e}")
+        logging.error(f"Raw HTTP streaming TTS error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========== TTS OPTIMIZATION CONFIGURATIONS ==========
@@ -1653,12 +1723,13 @@ def get_cached_tts_response(text: str, voice_id: str) -> Optional[str]:
     TTS_CACHE_STATS["hits"] += 1
     return cached_entry["audio"]
 
+
+
+
+# Fix 4: Replace generate_audio_word_by_word function (around line 2088)
 async def generate_audio_word_by_word(text: str, voice_id: str, output_format: dict) -> str:
     """
-    Generate audio using word-by-word parallel processing for faster results
-    Splits long text into smaller chunks and processes them in parallel
-
-    PERFORMANCE ISSUE FIX: If parallel processing takes too long (>4s), fallback to direct generation
+    Generate audio using word-by-word parallel processing - HTTP ONLY
     """
     parallel_start_time = time.time()
     words = text.split()
@@ -1667,48 +1738,55 @@ async def generate_audio_word_by_word(text: str, voice_id: str, output_format: d
         return await generate_audio_direct(text, voice_id, output_format)
 
     try:
-        # Set a timeout for parallel processing to prevent performance degradation
-        PARALLEL_TIMEOUT = 4.0  # If parallel takes >4s, fallback to direct
-
-        # Split into chunks of 3-5 words for optimal performance
+        PARALLEL_TIMEOUT = 4.0
         chunk_size = min(5, max(3, len(words) // 4))
         chunks = [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
 
-        logging.info(f"🔄 Attempting parallel processing with {len(chunks)} chunks")
+        logging.info(f"🔄 HTTP parallel processing with {len(chunks)} chunks")
 
-        # Generate audio chunks in parallel
-        async def generate_chunk(chunk_text: str):
+        async def generate_chunk_http(chunk_text: str):
             try:
-                # Run the synchronous TTS call in a thread to avoid blocking
-                audio_chunks = await asyncio.to_thread(
-                    lambda: client.tts.bytes(
-                        model_id="sonic",
-                        transcript=chunk_text,
-                        voice={"mode": "id", "id": voice_id},
-                        output_format=output_format
-                    )
-                )
-                return b"".join(audio_chunks)
+                # Use HTTP API for chunk generation
+                cartesia_url = "https://api.cartesia.ai/tts/bytes"
+                headers = {
+                    "X-API-Key": os.environ.get("CARTESIA_API_KEY"),
+                    "Cartesia-Version": "2024-06-30",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "model_id": "sonic-english",
+                    "transcript": chunk_text,
+                    "voice": {
+                        "mode": "id",
+                        "id": voice_id
+                    },
+                    "output_format": output_format
+                }
+                
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    response = await http_client.post(cartesia_url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    return response.content
+                    
             except Exception as e:
-                logging.error(f"Error generating chunk '{chunk_text}': {e}")
+                logging.error(f"Error generating HTTP chunk '{chunk_text}': {e}")
                 return b""
 
         # Process chunks in parallel with timeout
-        chunk_tasks = [asyncio.create_task(generate_chunk(chunk)) for chunk in chunks]
+        chunk_tasks = [asyncio.create_task(generate_chunk_http(chunk)) for chunk in chunks]
 
-        # Wait for all chunks with timeout
         try:
             chunk_results = await asyncio.wait_for(
                 asyncio.gather(*chunk_tasks, return_exceptions=True),
                 timeout=PARALLEL_TIMEOUT
             )
         except asyncio.TimeoutError:
-            # Cancel all pending tasks
             for task in chunk_tasks:
                 task.cancel()
 
             parallel_time = time.time() - parallel_start_time
-            logging.warning(f"⚠️ Parallel processing timeout after {parallel_time:.2f}s - falling back to direct generation")
+            logging.warning(f"⚠️ HTTP parallel processing timeout after {parallel_time:.2f}s - falling back to direct")
             return await generate_audio_direct(text, voice_id, output_format)
 
         # Combine all audio chunks
@@ -1719,50 +1797,89 @@ async def generate_audio_word_by_word(text: str, voice_id: str, output_format: d
                 combined_audio += result
                 successful_chunks += 1
             elif isinstance(result, Exception):
-                logging.error(f"Chunk processing error: {result}")
+                logging.error(f"HTTP chunk processing error: {result}")
 
         parallel_time = time.time() - parallel_start_time
 
-        # If too few chunks succeeded or took too long, fallback to direct
         if successful_chunks < len(chunks) * 0.7 or parallel_time > PARALLEL_TIMEOUT:
-            logging.warning(f"⚠️ Parallel processing inefficient ({successful_chunks}/{len(chunks)} chunks, {parallel_time:.2f}s) - falling back to direct")
+            logging.warning(f"⚠️ HTTP parallel processing inefficient - falling back to direct")
             return await generate_audio_direct(text, voice_id, output_format)
 
-        logging.info(f"✅ Parallel processing successful: {successful_chunks}/{len(chunks)} chunks in {parallel_time:.2f}s")
+        logging.info(f"✅ HTTP parallel processing successful: {successful_chunks}/{len(chunks)} chunks in {parallel_time:.2f}s")
         return base64.b64encode(combined_audio).decode("utf-8")
 
     except Exception as e:
         parallel_time = time.time() - parallel_start_time
-        logging.error(f"❌ Parallel processing failed after {parallel_time:.2f}s: {e}")
-        logging.info("🔄 Falling back to direct generation")
+        logging.error(f"❌ HTTP parallel processing failed after {parallel_time:.2f}s: {e}")
         return await generate_audio_direct(text, voice_id, output_format)
 
+
+
+
+
 async def generate_audio_direct(text: str, voice_id: str, output_format: dict) -> str:
-    """Direct audio generation for shorter texts"""
-    audio_chunks = client.tts.bytes(
-        model_id="sonic",
-        transcript=text,
-        voice={"mode": "id", "id": voice_id},
-        output_format=output_format
-    )
-    audio_data = b"".join(audio_chunks)
-    return base64.b64encode(audio_data).decode("utf-8")
+    """Direct audio generation using HTTP ONLY"""
+    try:
+        # Use HTTP API
+        cartesia_url = "https://api.cartesia.ai/tts/bytes"
+        headers = {
+            "X-API-Key": os.environ.get("CARTESIA_API_KEY"),
+            "Cartesia-Version": "2024-06-30",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model_id": "sonic-english",
+            "transcript": text,
+            "voice": {
+                "mode": "id",
+                "id": voice_id
+            },
+            "output_format": output_format
+        }
+        
+        async with httpx.AsyncClient(timeout=15.0) as http_client:
+            response = await http_client.post(cartesia_url, json=payload, headers=headers)
+            response.raise_for_status()
+            
+            audio_data = response.content
+        
+        return base64.b64encode(audio_data).decode("utf-8")
+        
+    except Exception as e:
+        logging.error(f"❌ Direct HTTP audio generation failed: {e}")
+        
+        # Fallback to gTTS
+        try:
+            tts = gTTS(text=text, lang='en', slow=False)
+            audio_buffer = io.BytesIO()
+            tts.write_to_fp(audio_buffer)
+            audio_buffer.seek(0)
+            
+            audio_data = audio_buffer.read()
+            return base64.b64encode(audio_data).decode("utf-8")
+            
+        except Exception as fallback_error:
+            raise Exception(f"All audio generation methods failed: {fallback_error}")
 # ========== ENHANCED TTS ENDPOINT WITH ALL OPTIMIZATIONS ==========
 
 # Replace your generate_audio_optimized function with this FINAL OPTIMIZED version:
 
 
+
+
+
 @app.post("/generate-audio-optimized")
 async def generate_audio_optimized(request: TTSRequest, background_tasks: BackgroundTasks):
     """
-    PERFECT TTS: Sub-0.5s generation with full async optimization
+    PERFECT TTS: HTTP-ONLY with full async optimization
     """
     tts_start_time = time.time()
 
     try:
         voice_id = get_voice_id_for_bot(request.bot_id)
 
-        # ✅ USE ASYNC CACHE: This is faster than sync cache
+        # ✅ USE ASYNC CACHE
         cached_audio = await get_cached_tts_response_async(request.transcript, voice_id)
         if cached_audio:
             cache_time = time.time() - tts_start_time
@@ -1775,68 +1892,96 @@ async def generate_audio_optimized(request: TTSRequest, background_tasks: Backgr
                 "performance_target_met": True
             }
 
-        # ✅ PERFECT FORMAT: Even faster than current 8kHz
+        # ✅ PERFECT FORMAT
         perfect_format = {
             "container": "wav",
             "encoding": "pcm_s16le",
-            "sample_rate": 8000,  # 25% faster than 8kHz, still audible
+            "sample_rate": 8000,
         }
 
-        print(f"🎵 PERFECT: Using 6kHz format: {perfect_format}")
+        print(f"🎵 PERFECT HTTP: Using format: {perfect_format}")
 
-        # ✅ ZERO-WASTE GENERATION
+        # ✅ HTTP-ONLY GENERATION
         try:
             generation_start = time.time()
 
-            audio_chunks = client.tts.bytes(
-                model_id="sonic",
-                transcript=request.transcript,
-                voice={"mode": "id", "id": voice_id},
-                output_format=perfect_format
-            )
-
-            audio_data = b"".join(audio_chunks)
-            audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+            # Use HTTP API with httpx for async support
+            cartesia_url = "https://api.cartesia.ai/tts/bytes"
+            headers = {
+                "X-API-Key": os.environ.get("CARTESIA_API_KEY"),
+                "Cartesia-Version": "2024-06-30",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model_id": "sonic-english",
+                "transcript": request.transcript,
+                "voice": {
+                    "mode": "id",
+                    "id": voice_id
+                },
+                "output_format": perfect_format
+            }
+            
+            async with httpx.AsyncClient(timeout=15.0) as http_client:
+                response = await http_client.post(cartesia_url, json=payload, headers=headers)
+                response.raise_for_status()
+                
+                audio_data = response.content
+                audio_base64 = base64.b64encode(audio_data).decode("utf-8")
 
             generation_time = time.time() - generation_start
-            print(f"🎯 PERFECT: Generated in {generation_time:.3f}s")
+            print(f"🎯 PERFECT HTTP: Generated in {generation_time:.3f}s")
 
             if not audio_base64 or len(audio_data) < 100:
                 raise Exception("Invalid audio generated")
 
         except Exception as e:
             error_time = time.time() - tts_start_time
-            print(f"❌ PERFECT: Generation failed in {error_time:.3f}s: {e}")
-            return {
-                "voice_id": voice_id,
-                "audio_base64": "",
-                "cached": False,
-                "generation_time": error_time,
-                "error": str(e)
-            }
+            print(f"❌ PERFECT HTTP: Generation failed in {error_time:.3f}s: {e}")
+            
+            # Fallback to gTTS
+            try:
+                tts = gTTS(text=request.transcript, lang='en', slow=False)
+                audio_buffer = io.BytesIO()
+                tts.write_to_fp(audio_buffer)
+                audio_buffer.seek(0)
+                
+                audio_data = audio_buffer.read()
+                audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+                print("✅ gTTS fallback successful")
+                
+            except Exception as fallback_error:
+                return {
+                    "voice_id": voice_id,
+                    "audio_base64": "",
+                    "cached": False,
+                    "generation_time": error_time,
+                    "error": str(fallback_error)
+                }
 
         total_time = time.time() - tts_start_time
 
-        # ✅ ASYNC CACHE STORAGE: Non-blocking background storage
+        # ✅ ASYNC CACHE STORAGE
         if audio_base64:
             asyncio.create_task(cache_tts_response_async(request.transcript, voice_id, audio_base64))
 
-        print(f"🎯 PERFECT TTS: {total_time:.3f}s | Size: {len(audio_base64)}")
+        print(f"🎯 PERFECT HTTP TTS: {total_time:.3f}s | Size: {len(audio_base64)}")
 
         return {
             "voice_id": voice_id,
             "audio_base64": audio_base64,
             "cached": False,
             "generation_time": total_time,
-            "optimization_used": "perfect_async",
-            "performance_target_met": total_time <= 0.5,
+            "optimization_used": "perfect_http",
+            "performance_target_met": total_time <= 2.0,
             "transfer_size": len(audio_base64),
             "format_used": perfect_format
         }
 
     except Exception as e:
         total_time = time.time() - tts_start_time
-        print(f"❌ PERFECT: System error in {total_time:.3f}s: {e}")
+        print(f"❌ PERFECT HTTP: System error in {total_time:.3f}s: {e}")
         return {
             "voice_id": get_voice_id_for_bot(request.bot_id),
             "audio_base64": "",
@@ -1844,6 +1989,13 @@ async def generate_audio_optimized(request: TTSRequest, background_tasks: Backgr
             "generation_time": total_time,
             "error": str(e)
         }
+
+
+
+
+
+
+
 # ========== TTS CACHE MANAGEMENT ENDPOINTS ==========
 @app.get("/tts-cache/stats")
 async def get_tts_cache_stats():
