@@ -284,21 +284,20 @@ def get_smart_audio_format(text: str, use_case: str):
 
 ### Production Performance (Last 30 Days)
 
-```mermaid
 gantt
     title Voice Call Pipeline Performance (Target: <6s)
-    dateFormat X
-    axisFormat %s
+    dateFormat  X
+    axisFormat  %s
 
     section Actual Performance
-    STT Processing    :0, 2.2s
-    AI Response       :2.2s, 2.8s
-    TTS Generation    :2.8s, 1.8s
-    Total Time        :0, 3.5s
+    STT Processing    :0, 2
+    AI Response       :2, 2.8
+    TTS Generation    :4.8, 1.8
+    Total Time        :0, 3.5
 
     section Target Performance
-    Target Threshold  :crit, 0, 6s
-```
+    Target Threshold  :crit, 0, 6
+
 
 ### Benchmark Results
 
