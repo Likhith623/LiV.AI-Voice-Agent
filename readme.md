@@ -282,24 +282,6 @@ def get_smart_audio_format(text: str, use_case: str):
 
 ## 📊 Performance Metrics
 
-### Production Performance (Last 30 Days)
-
-gantt
-    title Voice Call Pipeline Performance (Target: <6s)
-    dateFormat  YYYY-MM-DD
-    axisFormat  %d
-
-    section Actual Performance
-    STT Processing    :2025-01-01, 2d
-    AI Response       :2025-01-03, 3d
-    TTS Generation    :2025-01-06, 2d
-    Total Time        :2025-01-01, 5d
-
-    section Target Performance
-    Target Threshold  :crit, 2025-01-01, 6d
-
-
-
 ### Benchmark Results
 
 | Metric | Target | Actual | Status |
