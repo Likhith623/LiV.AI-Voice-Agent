@@ -872,10 +872,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **Likhith Vasireddy**
 
-[![Portfolio](https://img.shields.io/badge/Portfolio-likhith.dev-blue?style=for-the-badge&logo=google-chrome&logoColor=white)](https://likhith.dev)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://linkedin.com/in/likhithvasireddy)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/likhith-vasireddy-02a427291/)
 [![GitHub](https://img.shields.io/badge/GitHub-Follow-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Likhith623)
-[![Email](https://img.shields.io/badge/Email-Contact-EA4335?style=for-the-badge&logo=gmail&logoColor=white)](mailto:likhith@liv-ai.com)
+[![Email](https://img.shields.io/badge/Email-Contact-EA4335?style=for-the-badge&logo=gmail&logoColor=white)](mailto:kingjames.08623@gmail.com)
 
 **Full-Stack AI Engineer** specializing in voice AI, real-time systems, and scalable backend architecture. Passionate about building production-grade AI applications that deliver exceptional user experiences.
 
@@ -900,11 +899,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 📞 Support
 
-- **Documentation:** [docs.liv-ai.com](https://docs.liv-ai.com)
-- **Email:** support@liv-ai.com
-- **Discord:** [Join our community](https://discord.gg/liv-ai)
-- **Twitter:** [@LiVAI_Official](https://twitter.com/LiVAI_Official)
+- **Email:** kingjames.08623@gmail.com
 
 ---
 
-*Built with ❤️ by Likhith Vasireddy | © 2024 LiV.AI. All rights reserved.*
+*Built with ❤️ by Likhith Vasireddy | © 2025 LiV.AI. All rights reserved.*
