@@ -891,7 +891,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **⭐ Star this repo if you find it useful!**
 
-[Report Bug](https://github.com/Likhith623/LiV.AI/issues) · [Request Feature](https://github.com/Likhith623/LiV.AI/issues) · [Documentation](https://docs.liv-ai.com)
 
 </div>
 
