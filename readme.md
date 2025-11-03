@@ -29,8 +29,6 @@
 
 LiV.AI is a comprehensive voice AI platform that combines cutting-edge speech recognition, natural language processing, and neural text-to-speech synthesis to deliver human-like conversational experiences. Built for scale, the system handles real-time voice interactions with sub-3-second latency while maintaining 99.9% uptime.
 
-### 🎪 Live Demo
-**[Try LiV.AI Live](https://liv-ai-demo.vercel.app)** | **[API Docs](https://api.liv-ai.com/docs)**
 
 ### 🏆 Key Achievements
 - ⚡ **Sub-3s Response Time** - From voice input to audio output
